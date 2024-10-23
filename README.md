@@ -6,7 +6,7 @@ The analysis pipeline requires:
 2. Phenotype data(Document all the information of the samples)
 
 The analysis pipeline includes following steps:
-[NanoString nCounter analysis workflow]!(https://github.com/seanwatermelon/NanoString-nCounter-data-analysis/blob/main/NanoString%20nCounter%20analysis.png)
+![NanoString nCounter analysis workflow](https://github.com/seanwatermelon/NanoString-nCounter-data-analysis/blob/main/NanoString%20nCounter%20analysis.png)
 
 #To utilise this analysis pipeline, you have to make sure:
 1. The pipelines is initiated under R ver. 4.0.0
