@@ -1,0 +1,900 @@
+---
+title: "nano_string_ncounter_process"
+author: "Cheng Sheng Lai"
+date: "2024-10-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## NanoString nCounter data analysis pipeline:
+This is a R Markdown for processing gene expression data of NanoString nCounter platform.
+The analysis pipeline is consist of 7 steps:
+ (1) packages and function import
+ (2) data import 
+ (3) data preprocessing
+ (4) data quality check
+ (5) normalisation
+ (6) downstream data analysis
+ (7) visualisation
+
+###To install all of the packages, this Markdown need to work in R version 4.0.0. 
+###The pipeline requires the users to set up directory for data import and file storage.
+#1. Packages and function import:
+```{r}
+#Import self-defined function required in the pipeline:
+source('nanostring_RUVSeq_functions.R')
+
+if (!require("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+packageVersion("BiocManager")
+
+#Check the current version of R:
+R.version.string
+
+install.packages("locfit")
+BiocManager::install("DESeq2",force = TRUE)
+BiocManager::install("DESeq",force = TRUE)
+BiocManager::install("RUVSeq",force = TRUE)
+BiocManager::install("NanoStringDiff",force = TRUE)
+BiocManager::install("nanostringr",force = TRUE)
+BiocManager::install("NanoStringQCPro",force = TRUE)
+BiocManager::install("NanoStringNorm",force = TRUE)
+require("locfit")
+require("DESeq")
+require("DESeq2")
+require("RUVSeq")
+require("nanostringr")
+require("NanoStringDiff")
+require("png")
+require("NanoStringQCPro")
+require("ggplot2")
+require("EnvStats")
+require("NanoStringNorm")
+require("MASS")
+require("dplyr")
+require("formattable")
+require("xfun")
+require("limma")
+require("matrixStats")
+require("tidyr")
+require("tibble")
+require("Biobase")
+require("GEOquery")
+require("RUVSeq")
+require("DESeq2")
+require("matrixStats")
+require("NanoStringNorm")
+require("patchwork")
+require("limma")
+require("statmod")
+require("VennDiagram")
+require("gridExtra")
+require("pheatmap")
+require("viridis")
+```
+
+#2. Data import:
+```{r}
+##Create a list to document all the files name in in all of sub-directory:
+#Set up the main directory with multiple folders contained RCC files:
+setwd("RCC_files_folder")
+main_directory <- "RCC_files_folder"
+
+sub_directories <- list.dirs(path = main_directory, full.names = TRUE, recursive = FALSE)
+
+sub_directories
+
+all_rcc_files <- list()
+
+for (sub_dir in sub_directories) {
+  files <- list.files(path = sub_dir, full.names = TRUE)
+  all_rcc_files <- c(all_rcc_files, files)
+}
+
+all_rcc_files
+
+all_rcc_files = all_rcc_files[grepl('RCC',files.RCC)]
+
+all_rcc_files <- unlist(all_rcc_files)
+
+setwd(dirname(all_rcc_files[1]))
+
+ng_1 = nrow(readRcc(basename(all_rcc_files[1]))$Code_Summary)
+
+ncol_1 = length(all_rcc_files)
+
+
+raw_expression_1 = as.data.frame(matrix(nrow = ng_1,ncol = length(all_rcc_files)+2))
+
+colnames(raw_expression_1)[1:2] = c('Gene','Class')
+
+pData_1 = as.data.frame(matrix(nrow = length(all_rcc_files),ncol = 15))
+
+colnames(pData_1) = c('File_name','SampleID','Owner','Comments','Date','GeneRLF','SystemAPF','imagingQC','imagingQC_value', 'bindingDensityQC', 'bindingDensityQC_value', 'limitOfDetectionQC', 'limitOfDetectionQC_value', 'positiveLinearityQC', 'positiveLinearityQC_value')
+
+raw_expression_1[,1:2] = readRcc(basename(all_rcc_files[1]))$Code_Summary[,c(2,1)]
+
+```
+
+#3. Data preprocessing and quality check:
+```{r}
+
+for (i in 1:length(all_rcc_files)){
+  
+  print(i)
+  
+  setwd(dirname(all_rcc_files[i]))
+  
+  rcc = readRcc(basename(all_rcc_files[i]))
+  
+  raw = rcc$Code_Summary
+  
+  raw_expression_1[,i+2] = as.numeric(raw$Count)
+  
+  colnames(raw_expression_1)[i+2] = strsplit(basename(all_rcc_files[i]), '_')[[1]][1]
+  
+  pData_1[i,2:7] = as.vector(rcc$Sample_Attributes)
+  
+  pData_1$imagingQC[i] = imagingQC(rcc)
+  pData_1$imagingQC_value[i] = imagingQC_value(rcc)
+  
+  pData_1$bindingDensityQC[i] = bindingDensityQC(rcc,.1,1.8)
+  pData_1$bindingDensityQC_value[i] = bindingDensityQC_value(rcc)
+  
+  pData_1$limitOfDetectionQC[i] = limitOfDetectionQC(rcc)
+  pData_1$limitOfDetectionQC_value[i] = limitOfDetectionQC_value(rcc)
+
+  pData_1$positiveLinearityQC[i] = positiveLinQC(rcc)
+  pData_1$positiveLinearityQC_value[i] = positiveLinQC_value(rcc)
+  
+}
+
+
+colnames(raw_expression_1) <- make.unique(colnames(raw_expression_1))
+
+colname_raw_exp_1 <- colnames(raw_expression_1)[3:ncol(raw_expression_1)]
+
+pData_1$File_name <- colname_raw_exp_1 
+
+
+matches <- grep("^CHIVAS #\\d{1}$", pData_1$SampleID)
+pData_1$SampleID[matches] <- gsub("^CHIVAS #(\\d{1})$", "CHIVAS #0\\1", pData_1$SampleID[matches])
+
+matches <- grep("^CHIVAS #\\d{2}$", pData_1$SampleID)
+pData_1$SampleID[matches] <- gsub("^CHIVAS #(\\d{2})$", "CHIVAS #0\\1", pData_1$SampleID[matches])
+
+matches <- grep("^CHIVAS #\\d{3}$", pData_1$SampleID)
+pData_1$SampleID[matches] <- gsub("^CHIVAS #(\\d{3})$", "CHIVAS-\\1", pData_1$SampleID[matches])
+
+matches <- grep("^CHIVAS-\\d{3}$", pData_1$SampleID)
+pData_1$SampleID[matches] <- gsub("^CHIVAS-(\\d{3})$", "\\1", pData_1$SampleID[matches])
+
+Sample <- c("061", "063", "098", "100", "107", "109", "116", "117", "123", "127", "133", "139")
+
+pData_1 <- pData_1 %>%
+  mutate(SampleID = case_when(
+    SampleID == "Sample01" ~ Sample[1],
+    SampleID == "Sample02" ~ Sample[2],
+    SampleID == "Sample03" ~ Sample[3],
+    SampleID == "Sample04" ~ Sample[4],
+    SampleID == "Sample05" ~ Sample[5],
+    SampleID == "Sample06" ~ Sample[6],
+    SampleID == "Sample07" ~ Sample[7],
+    SampleID == "Sample08" ~ Sample[8],
+    SampleID == "Sample09" ~ Sample[9],
+    SampleID == "Sample10" ~ Sample[10],
+    SampleID == "Sample11" ~ Sample[11],
+    SampleID == "Sample12" ~ Sample[12],
+    TRUE ~ SampleID 
+  ))
+
+pData_1 <- pData_1 %>% arrange(SampleID)
+
+#Import "phenotype" csv file:
+phenotype <- read.csv("phenotype.csv")
+
+matches <- grep("^[0-9]$", phenotype$SampleID)
+phenotype$SampleID[matches] <- gsub("(^[0-9])", "0\\1", phenotype$SampleID[matches])
+matches <- grep("^[0-9]{2}$", phenotype$SampleID)
+phenotype$SampleID[matches] <- gsub("(^[0-9]{2}$)", "0\\1", phenotype$SampleID[matches])
+
+phenotype <- phenotype%>%arrange(SampleID)
+
+phenotype_filter <- semi_join(phenotype, pData_1, by = "SampleID")
+
+colnames(phenotype_filter)
+phenotype_selected <- phenotype_filter %>% dplyr::select(SampleID, Experiment:Time_of_diagnosis_or_peak)
+
+merged_pData_1 <- inner_join(phenotype_selected, pData_1, by = "SampleID")
+
+cols_pData_1 <- setdiff(names(pData_1), "SampleID")
+cols_phenotype_selected <- setdiff(names(phenotype_selected), "SampleID")
+new_merged_pData_1 <- c("SampleID", cols_pData_1, cols_phenotype_selected)
+merged_pData_1 <- merged_pData_1 %>% dplyr::select(all_of(new_merged_pData_1))
+
+merged_pData_1 <- merged_pData_1 %>% filter((SampleID != "PanelStandard"))
+
+#Deplete the flagged sample:
+merged_pData_1 <- merged_pData_1 %>% filter(!(imagingQC_value %in% "NaN"|bindingDensityQC_value %in% "NaN"|limitOfDetectionQC_value %in% "NaN"|positiveLinearityQC_value %in% "NaN"))
+
+duplicate_sample <- merged_pData_1 %>%
+  group_by(SampleID) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+#Remove the duplicates that with: 
+#(1) bindingDensityQC_value below 0.1 
+#(2) higher value of "Limit of detection":
+max_lod_sample <- duplicate_sample %>%
+  group_by(SampleID) %>%
+  arrange(SampleID, bindingDensityQC_value >= 0.1, desc(limitOfDetectionQC_value)) %>%
+  slice(1) %>%
+  ungroup()
+
+merged_pData_1 <- anti_join(merged_pData_1, max_lod_sample, by = c("SampleID", "limitOfDetectionQC_value"))
+```
+
+#4. Data quality check:
+```{r}
+###Decide which data point should be removed based on the result of QC. 
+#Label the flag value in the dataframe "pData_1":
+formattable(merged_pData_1, list(
+  imagingQC = formatter("span",
+                        style = x ~ ifelse(x == "Flag", 
+                                           style(color = "red", font.weight = "bold"), 
+                                           style(color = "green"))),
+  imagingQC_value = formatter("span",
+                              style = x ~ ifelse(is.na(x), NA,
+                                                 ifelse(merged_pData_1$imagingQC == "Flag", 
+                                                        style(color = "red", font.weight = "bold"), 
+                                                        style(color = "green")))),
+  bindingDensityQC = formatter("span",
+                               style = x ~ ifelse(x == "Flag", 
+                                                  style(color = "red", font.weight = "bold"), 
+                                                  style(color = "green"))),
+  bindingDensityQC_value = formatter("span",
+                                     style = x ~ ifelse(is.na(x), NA,
+                                                        ifelse(merged_pData_1$bindingDensityQC == "Flag", 
+                                                               style(color = "red", font.weight = "bold"), 
+                                                               style(color = "green")))),
+  limitOfDetectionQC = formatter("span",
+                                 style = x ~ ifelse(x == "Flag",
+                                                    style(color = "red", font.weight = "bold"), 
+                                                    style(color = "green"))),
+  limitOfDetectionQC_value = formatter("span",
+                                       style = x ~ ifelse(is.na(x), NA,
+                                                          ifelse(merged_pData_1$limitOfDetectionQC == "Flag", 
+                                                                 style(color = "red", font.weight = "bold"), 
+                                                                 style(color = "green")))),
+  positiveLinearityQC = formatter("span",
+                                  style = x ~ ifelse(x == "Flag",
+                                                     style(color = "red", font.weight = "bold"), 
+                                                     style(color = "green"))),
+  positiveLinearityQC_value = formatter("span",
+                                        style = x ~ ifelse(is.na(x), NA,
+                                                           ifelse(merged_pData_1$positiveLinearityQC == "Flag", 
+                                                                  style(color = "red", font.weight = "bold"), 
+                                                                  style(color = "green")))),
+  SampleID = formatter("span",
+                       style = x ~ ifelse(merged_pData_1$imagingQC == "Flag"|merged_pData_1$bindingDensityQC == "Flag"|merged_pData_1$limitOfDetectionQC == "Flag"|merged_pData_1$positiveLinearityQC == "Flag",
+                                          style(color = "red", font.weight = "bold"),
+                                          NA))
+))
+
+#Trim the dataframe "raw_expression_1" with the column "File_name" in "merged_pData_1":
+selected_columns <- c("Gene", "Class", merged_pData_1$File_name)
+raw_expression_1 <- raw_expression_1 %>% select(all_of(selected_columns))
+
+```
+## Here, the dataframes "raw_expression_1" and "merged_pData_1" are completed.
+##"raw_expression_1": Gene expression counts of each file.
+##"merged_pData_1": Detail information for each file.
+
+#5. Normalisation_1:
+```{r}
+raw_1 = raw_expression_1[,-c(1:2)]
+fData_1 = raw_expression_1[,c(1:2)]
+
+#Collect all the genes that be classified as "Housekeeping" genes, and defined as "cIdx":
+##Deplete the Housekeeping gene below 100:
+cIdx <- fData_1$Gene[fData_1$Class == "Housekeeping"]
+
+merged_pData_1$HK_Gene_Miss = colSums(raw_1[cIdx,] == 0)
+
+rownames(fData_1) = fData_1$Gene
+
+rownames(raw_1) = fData_1$Gene
+
+rownames(merged_pData_1) = colnames(raw_1)
+
+####Check if housekeeping genes are associated with primary phenotypes:
+hk_raw_1 = raw_1[cIdx,]
+
+pval_1 = vector(length = nrow(hk_raw_1))
+
+for (i in 1:nrow(hk_raw_1)){
+  
+  reg = glm.nb(as.numeric(hk_raw_1[i,]) ~ as.factor(merged_pData_1$Outcome4))
+  
+  pval_1[i] = coef(summary(reg))[2,4]
+}
+
+sum(pval_1 <= .05)
+pval_1
+
+##Based on the the result of negative binomial GLM model test to remove housekeeping genes.
+
+raw_log <- data.frame(raw_1[1:773,])
+
+rld_data_raw <- log2(raw_log)
+
+gene_medians_raw <- apply(rld_data_raw, 1, median)
+
+rle_data_raw <- sweep(rld_data_raw, 1, gene_medians_raw)
+
+colnames(rle_data_raw) <- make.unique(colnames(rle_data_raw))
+rle_data_raw_df <- as.data.frame(rle_data_raw)
+rle_data_raw_df <- rownames_to_column(rle_data_raw_df, var = "gene")
+rle_long_raw <- pivot_longer(rle_data_raw_df, cols = -gene, names_to = "sample", values_to = "value")
+
+##Normalize data with "RUVseq" method:
+k = 1
+vsd = RUV_total(raw_1,merged_pData_1,fData_1,k = k)$vsd
+set = RUV_total(raw_1,merged_pData_1,fData_1,k = k)$set 
+save(vsd,file = paste0("strep_A_ruv_vsd_k_1", k,".rda"))
+save(set,file = paste0("strep_A_ruv_set_k_1", k,".rda"))
+
+
+i = 1
+results = paste0("strep_A_deg_k_1",i,".csv")
+load(paste0("strep_A_ruv_set_k_1",i,".rda"))
+
+dds_1 <- DESeqDataSetFromMatrix(countData = counts(set)[1:773,],
+                              colData = pData(set),
+                              design = ~ 1)
+
+dds_1 <- DESeq(dds_1)
+
+size_factors_1 <- sizeFactors(dds_1)
+print(size_factors_1)
+
+rld_1_normalized <- counts(dds_1, normalized=TRUE)
+rld_1_normalized <- log2(rld_1_normalized)
+rld_1_normalized[is.infinite(rld_1_normalized) & rld_1_normalized < 0] <- 0
+rld_1_normalized[is.na(rld_1_normalized)] <- 0
+
+gene_medians_1 <- apply(rld_1_normalized, 1, median)
+
+rle_data_1 <- sweep(rld_1_normalized, 1, gene_medians_1)
+
+colnames(rle_data_1) <- make.unique(colnames(rle_data_1))
+rle_data_1_df <- as.data.frame(rle_data_1)
+rle_data_1_df <- rownames_to_column(rle_data_1_df, var = "gene")
+rle_long_1 <- pivot_longer(rle_data_1_df, cols = -gene, names_to = "sample", values_to = "value")
+
+##Create a Dataset for DESeq analysis (nSolver):
+dds.nsolver_1 <- DESeqDataSetFromMatrix(countData = counts(set)[1:773,],
+                                        colData = pData(set),
+                                        design = ~1)
+pos_1 = raw_1[grepl('Positive',raw_expression_1$Class),]
+hk_1 = raw_1[grepl('Housekeeping',raw_expression_1$Class),]
+pos.factors_1 = mean(as.numeric(apply(pos_1,2,geoMean)))/as.numeric(apply(pos_1,2,geoMean))
+hk.factors_1 = mean(as.numeric(apply(hk_1,2,geoMean)))/as.numeric(apply(hk_1,2,geoMean))
+sizeFactors(dds.nsolver_1) <- pos.factors_1 * hk.factors_1
+dds.nsolver_1 <- DESeq(dds.nsolver_1)
+
+size_factors_2 <- sizeFactors(dds.nsolver_1)
+print(size_factors_2)
+
+rld_2_normalized <- counts(dds.nsolver_1, normalized=TRUE)
+rld_2_normalized <- log2(rld_2_normalized)
+rld_2_normalized[is.infinite(rld_2_normalized) & rld_2_normalized < 0] <- 0
+rld_2_normalized[is.na(rld_2_normalized)] <- 0
+
+gene_medians_2 <- apply(rld_2_normalized, 1, median)
+
+rle_data_2 <- sweep(rld_2_normalized, 1, gene_medians_2)
+
+colnames(rle_data_2) <- make.unique(colnames(rle_data_2))
+rle_data_2_df <- as.data.frame(rle_data_2)
+rle_data_2_df <- rownames_to_column(rle_data_2_df, var = "gene")
+rle_long_2 <- pivot_longer(rle_data_2_df, cols = -gene, names_to = "sample", values_to = "value")
+
+##Check whether the normalization result from nSolver software aligns with the algorithm: 
+nSolver_result <- read.csv("nSolver_analysed_result") 
+rownames(nSolver_result) <- nSolver_result[,1]
+nSolver_result <- nSolver_result[,-1]
+nSolver_result <- log2(nSolver_result)
+
+gene_medians_3 <- apply(nSolver_result, 1, median)
+
+rle_data_3 <- sweep(nSolver_result, 1, gene_medians_2)
+
+colnames(rle_data_3) <- make.unique(colnames(rle_data_3))
+rle_data_3_df <- as.data.frame(rle_data_3)
+rle_data_3_df$gene <- rownames(rle_data_3_df) 
+rle_long_3 <- pivot_longer(rle_data_3_df, cols = -gene, names_to = "sample", values_to = "value")
+
+```
+
+#5. Normalisation_2(RLE plot):
+```{r}
+#Raw data RLE plot:
+y_limits <- c(-8, 8)
+y_breaks <- seq(-8,8, by = 2)
+
+rle_plot_raw <- ggplot(rle_long_raw, aes(x = sample, y = value)) +
+              geom_boxplot(coef = 6, outlier.shape = 16, color = "black") +
+              scale_y_continuous(limits = y_limits, breaks = y_breaks) + 
+              stat_summary(fun = median, geom = "line", size = 4) +
+              geom_hline(yintercept = 0, color = "red", size = .5) +
+              theme_minimal() +
+              labs(title = "RLE Plot (Raw)",
+                   x = NULL,
+                   y = NULL) +
+              theme(axis.text.x = element_blank(),
+                    axis.text.y = element_text(size = 18),
+                    axis.ticks.x = element_blank(),
+                    title = element_text(size = 18, face = "bold"))
+
+rle_plot_raw
+
+#RUVseq normalised data RLE plot: 
+rle_plot_1 <- ggplot(rle_long_1, aes(x = sample, y = value)) +
+               geom_boxplot(coef = 6, outlier.shape = 16, color = "black") +
+               scale_y_continuous(limits = y_limits, breaks = y_breaks) + 
+               stat_summary(fun = median, geom = "line", size = 4) +
+               geom_hline(yintercept = 0, color = "red", size = .5) +
+               theme_minimal() +
+               labs(title = "RLE Plot (RUVseq)",
+                    x = NULL,
+                    y = "Median deviation of log2 expression") +
+               theme(axis.text.x = element_blank(),
+                     axis.text.y = element_text(size = 18),
+                     axis.ticks.x = element_blank(),
+                     axis.title.y = element_text(size = 18),
+                     title = element_text(size = 18, face = "bold"))
+
+rle_plot_1
+
+#nSolver normalised data RLE plot:
+rle_plot_2 <- ggplot(rle_long_2, aes(x = sample, y = value)) +
+                     geom_boxplot(coef = 6, outlier.shape = 16, color = "black") +
+                     scale_y_continuous(limits = y_limits, breaks = y_breaks) + 
+                     stat_summary(fun = median, geom = "line", size = 4) +
+                     geom_hline(yintercept = 0, color = "red", size = .5) +
+                     theme_minimal() +
+                     labs(title = "RLE Plot (nSolver)",
+                          x = "Sample",
+                          y = NULL) +
+                     theme(axis.text.x = element_blank(),
+                           axis.text.y = element_text(size = 14), 
+                           axis.ticks.x = element_blank(),
+                           axis.title.x = element_text(size = 16),
+                           title = element_text(size = 18, face = "bold"))
+
+rle_plot_2
+
+#nSolver software normalised data RLE plot:
+rle_plot_3 <- ggplot(rle_long_3, aes(x = sample, y = value)) +
+  geom_boxplot(coef = 6, outlier.shape = 16, color = "black") +
+  scale_y_continuous(limits = y_limits, breaks = y_breaks) + 
+  stat_summary(fun = median, geom = "line", size = 4) +
+  geom_hline(yintercept = 0, color = "red", size = .5) +
+  theme_minimal() +
+  labs(title = "RLE Plot (nSolver software)",
+       x = "Sample",
+       y = NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 18),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_text(size = 22, face = "bold"),
+        title = element_text(size = 18, face = "bold"))
+
+rle_plot_3
+
+##Merge "rle_plot_raw", "rle_plot_1" and "rle_plot_2", "rle_plot_3" into one figure:
+RLE_plot_rlog <- rle_plot_raw/rle_plot_1/rle_plot_3
+setwd("RCC_files_folder")
+ggsave("RLE_plot.pdf", plot = RLE_plot_rlog, device = "pdf", width = 18, height = 12)
+RLE_plot_rlog
+
+```
+
+#6. Downstream analysis:
+```{r}
+##Create analysis model in "Timepoint" and "Symptoms" with limma: 
+raw_dataframe <- rld_1_normalized
+pheno_dataframe <- AnnotatedDataFrame(data.frame(colData(dds_1)))
+feature_dataframe <- AnnotatedDataFrame(data.frame(fData_1[1:773, ]))
+
+dds_limma <- ExpressionSet(assayData = raw_dataframe,
+                           phenoData = pheno_dataframe,
+                           featureData = feature_dataframe)
+
+dim(dds_limma)
+
+dds_limma$Timepoint <- as.character(dds_limma$Timepoint)
+
+exprs_data <- exprs(dds_limma)
+pData_RUV <- pData(dds_limma)
+plotDensities(exprs_data, legend = FALSE)
+
+
+group_time_outcome_RUV <- with(pData(dds_limma), paste(Outcome2, Timepoint, sep = "."))
+group_time_outcome_RUV <- gsub(" ", "_", group_time_outcome_RUV)
+group_time_outcome_RUV <- factor(group_time_outcome_RUV)
+design_RUV <- model.matrix(~0 + group_time_outcome_RUV, data = pData(dds_limma))
+
+corfit_participant <- duplicateCorrelation(exprs_data, design_RUV, block = pData_RUV$Participant)
+
+colnames(design_RUV) <- levels(group_time_outcome_RUV)
+colSums(design_RUV)
+cm <- makeContrasts(
+  #Same outcome with different timepoint:
+  T24_vs_T0_NP = No_Pharyngitis.24 - No_Pharyngitis.0,
+  T36_vs_T0_NP = No_Pharyngitis.36 - No_Pharyngitis.0,
+  T48_vs_T0_NP = No_Pharyngitis.48 - No_Pharyngitis.0,
+  T60_vs_T0_NP = No_Pharyngitis.60 - No_Pharyngitis.0,
+  T72_vs_T0_NP = No_Pharyngitis.72 - No_Pharyngitis.0,
+  T84_vs_T0_NP = No_Pharyngitis.84 - No_Pharyngitis.0,
+  T96_vs_T0_NP = No_Pharyngitis.96 - No_Pharyngitis.0,
+  T108_vs_T0_NP = No_Pharyngitis.108 - No_Pharyngitis.0,
+  
+  T24_vs_T0_P = Pharyngitis.24 - Pharyngitis.0,
+  T36_vs_T0_P = Pharyngitis.36 - Pharyngitis.0,
+  T48_vs_T0_P = Pharyngitis.48 - Pharyngitis.0,
+  T60_vs_T0_P = Pharyngitis.60 - Pharyngitis.0,
+  T72_vs_T0_P = Pharyngitis.72 - Pharyngitis.0,
+  T84_vs_T0_P = Pharyngitis.84 - Pharyngitis.0,
+  T96_vs_T0_P = Pharyngitis.96 - Pharyngitis.0,
+  T120_vs_T0_P = Pharyngitis.120 - Pharyngitis.0,
+  T132_vs_T0_P = Pharyngitis.132 - Pharyngitis.0,
+  #Same timepoint with different outcome:
+  P_vs_NP_T0 = Pharyngitis.0 - No_Pharyngitis.0,
+  P_vs_NP_T24 = Pharyngitis.24 - No_Pharyngitis.24,
+  P_vs_NP_T48 = Pharyngitis.48 - No_Pharyngitis.48,
+  P_vs_NP_T60 = Pharyngitis.60 - No_Pharyngitis.60,
+  P_vs_NP_T72 = Pharyngitis.72 - No_Pharyngitis.72,
+  P_vs_NP_T84 = Pharyngitis.84 - No_Pharyngitis.84,
+  P_vs_NP_T96 = Pharyngitis.96 - No_Pharyngitis.96,
+  P_vs_NP_T120 = Pharyngitis.120 - No_Pharyngitis.120,
+  #Different timepoint with differnent outcome:
+  T0_P_vs_T0_NP = Pharyngitis.0 - No_Pharyngitis.0,
+  T24_P_vs_T0_NP = Pharyngitis.24 - No_Pharyngitis.0,
+  T36_P_vs_T0_NP = Pharyngitis.36 - No_Pharyngitis.0,
+  T48_P_vs_T0_NP = Pharyngitis.48 - No_Pharyngitis.0,
+  T60_P_vs_T0_NP = Pharyngitis.60 - No_Pharyngitis.0,
+  T72_P_vs_T0_NP = Pharyngitis.72 - No_Pharyngitis.0,
+  T84_P_vs_T0_NP = Pharyngitis.84 - No_Pharyngitis.0,
+  T96_P_vs_T0_NP = Pharyngitis.96 - No_Pharyngitis.0,
+  T120_P_vs_T0_NP = Pharyngitis.120 - No_Pharyngitis.0,
+  T132_P_vs_T0_NP = Pharyngitis.132 - No_Pharyngitis.0,
+  levels = design_RUV)
+
+fit_RUV <- lmFit(dds_limma, design_RUV, block = pData_RUV$Participant, correlation = corfit_participant$consensus.correlation)
+fit_RUV_1 <- contrasts.fit(fit_RUV, contrasts = cm)
+fit_RUV_1 <- eBayes(fit_RUV_1)
+results_RUV <- decideTests(fit_RUV_1)
+summary(results_RUV)
+
+#Create volcanoplot to display gene expression differentiation:
+topTable_results_P_vs_NP_T0 <- topTable(fit_RUV_1, coef="P_vs_NP_T0", number=Inf)
+topTable_results_P_vs_NP_T24 <- topTable(fit_RUV_1, coef="P_vs_NP_T24", number=Inf)
+topTable_results_P_vs_NP_T48 <- topTable(fit_RUV_1, coef="P_vs_NP_T48", number=Inf)
+topTable_results_P_vs_NP_T60 <- topTable(fit_RUV_1, coef="P_vs_NP_T60", number=Inf)
+topTable_results_P_vs_NP_T72 <- topTable(fit_RUV_1, coef="P_vs_NP_T72", number=Inf)
+topTable_results_P_vs_NP_T120 <- topTable(fit_RUV_1, coef="P_vs_NP_T120", number=Inf)
+
+```
+
+#7. Visualisation_1(Venn diagram):
+```{r}
+##Demonstrate the number of up- and down-regulation genes in each comparison groups:
+#Create up- and down-regulation list for "topTable_results_P_vs_NP_T24":
+T24_up <- topTable_results_P_vs_NP_T24 %>% 
+  filter(logFC > 2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T24_down <- topTable_results_P_vs_NP_T24 %>% 
+  filter(logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+
+T24_up <- as.character(T24_up$Gene)
+T24_down <- as.character(T24_down$Gene)
+#Create up- and down-regulation list for "topTable_results_P_vs_NP_T48":
+T48_up <- topTable_results_P_vs_NP_T48 %>% 
+  filter(logFC > 2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T48_down <- topTable_results_P_vs_NP_T48 %>% 
+  filter(logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+
+T48_up <- as.character(T48_up$Gene)
+T48_down <- as.character(T48_down$Gene)
+#Create up- and down-regulation list for "topTable_results_P_vs_NP_T60":
+T60_up <- topTable_results_P_vs_NP_T60 %>% 
+  filter(logFC > 2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T60_down <- topTable_results_P_vs_NP_T60 %>% 
+  filter(logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+
+T60_up <- as.character(T60_up$Gene)
+T60_down <- as.character(T60_down$Gene)
+#Create up- and down-regulation list for "topTable_results_P_vs_NP_T72":
+T72_up <- topTable_results_P_vs_NP_T72 %>% 
+  filter(logFC > 2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T72_down <- topTable_results_P_vs_NP_T72 %>% 
+  filter(logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+
+T72_up <- as.character(T72_up$Gene)
+T72_down <- as.character(T72_down$Gene)
+#Create up- and down-regulation list for "topTable_results_P_vs_NP_T120":
+T120_up <- topTable_results_P_vs_NP_T120 %>% 
+  filter(logFC > 2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T120_down <- topTable_results_P_vs_NP_T120 %>% 
+  filter(logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+
+T120_up <- as.character(T120_up$Gene)
+T120_down <- as.character(T120_down$Gene)
+
+setwd("RCC_files_folder")
+
+venn.plot_up <- venn.diagram(
+  x = list(
+    "24 hr" = T24_up, 
+    "48 hr" = T48_up, 
+    "60 hr" = T60_up, 
+    "72 hr" = T72_up, 
+    "120 hr" = T120_up
+  ),
+  category.names = c("24 hr", "48 hr", "60 hr", "72 hr", "120 hr"),
+  filename = NULL,
+  fill = c("red", "orange", "yellow", "green", "blue"),
+  alpha = 0.5,
+  cex = 2,
+  fontfamily = "serif",
+  fontface = "bold",
+  cat.cex = 3,
+  cat.fontfamily = "serif",
+  cat.fontface = "bold",
+  cat.dist = rep(0.05, 5), 
+  cat.pos = c(-1, 1, -1, 1, -1) 
+)
+
+up_values_count <- c(
+  "24 hr" = length(T24_up),
+  "48 hr" = length(T48_up),
+  "60 hr" = length(T60_up),
+  "72 hr" = length(T72_up),
+  "120 hr" = length(T120_up)
+)
+
+up_values_count <- data.frame(
+  Group = names(up_values_count),
+  Gene = up_values_count,
+  stringsAsFactors = FALSE
+)
+
+up_table_grob <- tableGrob(up_values_count, rows = NULL, theme = ttheme_default(base_size = 14))
+
+up_combined_plot <- arrangeGrob(gTree(children = venn.plot_up), up_table_grob,
+                                ncol = 2, widths = c(4, 1),
+                                top = textGrob("Upregulated gene",
+                                               gp = gpar(fontsize = 20, fontface = "bold")))
+
+grid.newpage()
+grid.draw(up_combined_plot)
+setwd("RCC_files_folder")
+ggsave("up_venn_diagram.pdf", plot = up_combined_plot, device = "pdf", width = 15, height = 10)
+
+venn.plot_down <- venn.diagram(
+  x = list(
+    "24 hr" = T24_down, 
+    "48 hr" = T48_down, 
+    "60 hr" = T60_down, 
+    "72 hr" = T72_down, 
+    "120 hr" = T120_down
+  ),
+  category.names = c("24 hr", "48 hr", "60 hr", "72 hr", "120 hr"),
+  filename = NULL,
+  fill = c("red", "orange", "yellow", "green", "blue"),
+  alpha = 0.5,
+  cex = 2,
+  fontfamily = "serif",
+  fontface = "bold",
+  cat.cex = 3,
+  cat.fontfamily = "serif",
+  cat.fontface = "bold",
+  cat.dist = rep(0.05, 5), 
+  cat.pos = c(-1, 1, -1, 1, -1) 
+)
+
+down_values_count <- c(
+  "24 hr" = length(T24_down),
+  "48 hr" = length(T48_down),
+  "60 hr" = length(T60_down),
+  "72 hr" = length(T72_down),
+  "120 hr" = length(T120_down)
+)
+
+down_values_count <- data.frame(
+  "Group" = names(down_values_count),
+  "Gene" = down_values_count,
+  stringsAsFactors = FALSE
+)
+
+down_table_grob <- tableGrob(down_values_count, rows = NULL, theme = ttheme_default(base_size = 14))
+
+down_combined_plot <- arrangeGrob(gTree(children = venn.plot_down), down_table_grob,
+                                ncol = 2, widths = c(4, 1),
+                                top = textGrob("Downregulated gene",
+                                               gp = gpar(fontsize = 20, fontface = "bold")))
+
+
+grid.newpage()
+grid.draw(down_combined_plot)
+ggsave("down_venn_diagram.pdf", plot = down_combined_plot, device = "pdf", width = 15, height = 10)
+
+```
+
+#7. Visualisation_2(Volcano plot):
+```{r}
+##Create up-regulation list of all timepoint:
+T24_up_df <- data.frame(Value = T24_up, Gene = T24_up, stringsAsFactors = FALSE)
+T48_up_df <- data.frame(Value = T48_up, Gene = T48_up, stringsAsFactors = FALSE)
+T60_up_df <- data.frame(Value = T60_up, Gene = T60_up, stringsAsFactors = FALSE)
+T72_up_df <- data.frame(Value = T72_up, Gene = T72_up, stringsAsFactors = FALSE)
+T120_up_df <- data.frame(Value = T120_up, Gene = T120_up, stringsAsFactors = FALSE)
+
+up_all <- unique(c(T24_up, T48_up, T60_up, T72_up, T120_up))
+up_list <- data.frame(Gene = up_all, stringsAsFactors = FALSE)
+up_list <- up_list %>%
+  left_join(T24_up_df, by = "Gene") %>%
+  left_join(T48_up_df, by = "Gene") %>%
+  left_join(T60_up_df, by = "Gene") %>%
+  left_join(T72_up_df, by = "Gene") %>%
+  left_join(T120_up_df, by = "Gene")
+
+rownames(up_list) <- up_list$Gene
+up_list <- up_list[, -1]
+colnames(up_list) <- c("T24", "T48", "T60", "T72", "T120")
+up_non_na_counts <- apply(up_list, 1, function(row) sum(!is.na(row)))
+up_list <- up_list[order(up_non_na_counts, decreasing = TRUE), ]
+
+
+##Create down-regulation list of all timepoint:
+T24_down_df <- data.frame(Value = T24_down, Gene = T24_down, stringsAsFactors = FALSE)
+T48_down_df <- data.frame(Value = T48_down, Gene = T48_down, stringsAsFactors = FALSE)
+T60_down_df <- data.frame(Value = T60_down, Gene = T60_down, stringsAsFactors = FALSE)
+T72_down_df <- data.frame(Value = T72_down, Gene = T72_down, stringsAsFactors = FALSE)
+T120_down_df <- data.frame(Value = T120_down, Gene = T120_down, stringsAsFactors = FALSE)
+
+down_all <- unique(c(T24_down, T48_down, T60_down, T72_down, T120_down))
+down_list <- data.frame(Gene = down_all, stringsAsFactors = FALSE)
+down_list <- down_list %>%
+  left_join(T24_down_df, by = "Gene") %>%
+  left_join(T48_down_df, by = "Gene") %>%
+  left_join(T60_down_df, by = "Gene") %>%
+  left_join(T72_down_df, by = "Gene") %>%
+  left_join(T120_down_df, by = "Gene")
+
+rownames(down_list) <- down_list$Gene
+down_list <- down_list[, -1]
+colnames(down_list) <- c("T24", "T48", "T60", "T72", "T120")
+down_non_na_counts <- apply(down_list, 1, function(row) sum(!is.na(row)))
+down_list <- down_list[order(down_non_na_counts, decreasing = TRUE), ]
+
+##Visualise the gene expression difference in each comparison groups with volcano plot:
+gene_RUV <- fit_RUV_1$genes[, "Gene"]
+
+T0_vol <- volcanoplot_neo(fit_RUV_1, coef = "P_vs_NP_T0", highlight = 10,
+                          names = gene_RUV, title = "(a) 0 hrs gene expression comparison",
+                          legend = FALSE)
+T24_vol <- volcanoplot_neo(fit_RUV_1, coef = "P_vs_NP_T24", highlight = 10,
+                           names = gene_RUV, title = "(b) 24 hrs gene expression comparison",
+                           legend = FALSE)
+T48_vol <- volcanoplot_neo(fit_RUV_1, coef = "P_vs_NP_T48", highlight = 10,
+                           names = gene_RUV, title = "(c) 48 hrs gene expression comparison",
+                           legend = FALSE)
+T60_vol <- volcanoplot_neo(fit_RUV_1, coef = "P_vs_NP_T60", highlight = 10, 
+                           names = gene_RUV, title = "(d) 60 hrs gene expression comparison",
+                           legend = FALSE)
+T72_vol <- volcanoplot_neo(fit_RUV_1, coef = "P_vs_NP_T72", highlight = 10,
+                           names = gene_RUV, title = "(e) 72 hrs gene expression comparison",
+                           legend = FALSE)
+T120_vol <- volcanoplot_neo(fit_RUV_1, coef = "P_vs_NP_T120", highlight = 10,
+                           names = gene_RUV, title = "(f) 120 hrs gene expression comparison",
+                           legend = FALSE)
+
+vol_final <- (T0_vol|T24_vol) / (T48_vol|T60_vol) / (T72_vol|T120_vol)
+vol_final
+ggsave("Vol_plot.pdf", plot = vol_final, device = "pdf", width = 21, height = 14)
+
+```
+
+#7. Visualisation_2(Heatmap):
+```{r}
+##Create heatamp to demonstrate gene expression among all groups: 
+
+annotation_col <- merged_pData_1[, c("Timepoint", "Outcome2")]
+names(annotation_col)[names(annotation_col) == "Outcome2"] <- "Symptom"
+
+rownames(annotation_col) <- colnames(raw_dataframe)
+
+annotation_col <- arrange(annotation_col, Symptom, Timepoint)
+
+gene_means_1 <- apply(rld_1_normalized, 1, mean)
+normalized_raw_dataframe <- sweep(rld_1_normalized, 1, gene_means_1)
+
+arrange_raw_dataframe <- normalized_raw_dataframe[, rownames(annotation_col)]
+arrange_raw_dataframe <- as.data.frame(arrange_raw_dataframe)
+
+T0_sig <- topTable_results_P_vs_NP_T0 %>% 
+  filter(logFC > 2 | logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T24_sig <- topTable_results_P_vs_NP_T24 %>% 
+  filter(logFC > 2 | logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T48_sig <- topTable_results_P_vs_NP_T48 %>% 
+  filter(logFC > 2 | logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T60_sig <- topTable_results_P_vs_NP_T60 %>% 
+  filter(logFC > 2 | logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T72_sig <- topTable_results_P_vs_NP_T72 %>% 
+  filter(logFC > 2 | logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+T120_sig <- topTable_results_P_vs_NP_T120 %>% 
+  filter(logFC > 2 | logFC < -2, P.Value < 0.05) %>% 
+  arrange(desc(logFC)) %>%
+  select(Gene)
+
+sig_all <- bind_rows(T0_sig, T24_sig, T48_sig, T60_sig, T72_sig, T120_sig) %>%
+           distinct()
+
+arrange_raw_dataframe <- arrange_raw_dataframe %>%
+                         filter(rownames(arrange_raw_dataframe) %in% rownames(sig_all))
+
+arrange_raw_dataframe <- arrange_raw_dataframe %>%
+                         arrange(match(rownames(arrange_raw_dataframe),rownames(sig_all)))
+
+
+##Plot the heat map of gene expression results:
+
+Heatmap_Strep_A <- pheatmap(arrange_raw_dataframe,
+         main = "Gene expression of Streptococcus infection",
+         cluster_cols = FALSE,
+         cutree_rows = 3,
+         gaps_col = c(6, 12, 13, 19, 22, 28, 29, 35, 36, 42, 61, 78, 84, 99, 101, 104, 105, 106, 121),
+         show_colnames = F,
+         show_rownames = T,
+         col = viridis(10, option = "plasma"),
+         border_color = "black",
+         annotation_col = annotation_col)
+
+ggsave("Heatmap_Strep_A.pdf", plot = Heatmap_Strep_A, device = "pdf", width = 20, height = 20)
+
+```
